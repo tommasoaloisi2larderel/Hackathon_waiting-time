@@ -1,0 +1,33 @@
+pressure
+wind_speed
+rain_1h
+snow_1h
+clouds_all
+ADJUST_CAPACITY
+DOWNTIME
+CURRENT_WAIT_TIME
+IS_WEEKEND
+IS_SCHOOL_VAC
+IS_HOLIDAY
+year
+month
+hour
+time_minutes
+sin_hour
+cos_hour
+sin_dow
+cos_dow
+sin_month
+cos_month
+CURRENT_WAIT_TIME_lag1
+CURRENT_WAIT_TIME_lag2
+CURRENT_WAIT_TIME_lag3
+CURRENT_WAIT_TIME_ma3
+CURRENT_WAIT_TIME_ma6
+CURRENT_WAIT_TIME_ma12
+time
+Water Ride
+Pirate Ship
+NEAREST_EVENT_MINS
+EVENT_WITHIN_60
+EVENT_WITHIN_120
