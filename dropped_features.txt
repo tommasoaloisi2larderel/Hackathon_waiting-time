@@ -1,7 +1,0 @@
-temp
-dew_point
-feels_like
-humidity
-dayofweek
-minute
-day
