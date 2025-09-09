@@ -31,12 +31,14 @@ train_df["Water Ride"] = train_df["ENTITY_DESCRIPTION_SHORT"].apply(lambda x: 1 
 train_df["Pirate Ship"] = train_df["ENTITY_DESCRIPTION_SHORT"].apply(lambda x: 1 if x=="Pirate Ship" else 0)
 train_df = train_df.drop(columns=["ENTITY_DESCRIPTION_SHORT"])
 
-#train_df['TIME_TO_PARADE_1'] = train_df['TIME_TO_PARADE_1'].apply(lambda x:)
+train_df['TIME_TO_PARADE_2'] = train_df['TIME_TO_PARADE_2'].apply(lambda x: 24*60 if pd.isna(x) else x)
+train_df['TIME_TO_PARADE_1'] = train_df['TIME_TO_PARADE_1'].apply(lambda x: 24*60 if pd.isna(x) else x)
+train_df['TIME_TO_NIGHT_SHOW'] = train_df['TIME_TO_NIGHT_SHOW'].apply(lambda x: 24*60 if pd.isna(x) else x)
 
 model = KNeighborsRegressor(n_neighbors=5)
 
 
-print(train_df.columns)
+
 """
 X = train_df[['ADJUST_CAPACITY', 'DOWNTIME', 'CURRENT_WAIT_TIME', 'year',
        'month', 'day', 'time', 'Water Ride', 'Pirate Ship']]
