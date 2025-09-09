@@ -35,17 +35,23 @@ train_df['TIME_TO_PARADE_2'] = train_df['TIME_TO_PARADE_2'].apply(lambda x: 24*6
 train_df['TIME_TO_PARADE_1'] = train_df['TIME_TO_PARADE_1'].apply(lambda x: 24*60 if pd.isna(x) else x)
 train_df['TIME_TO_NIGHT_SHOW'] = train_df['TIME_TO_NIGHT_SHOW'].apply(lambda x: 24*60 if pd.isna(x) else x)
 
+train_df['snow_1h'] = train_df['snow_1h'].apply(lambda x: 0 if pd.isna(x) else x)
+train_df['rain_1h'] = train_df['rain_1h'].apply(lambda x: 0 if pd.isna(x) else x)
+
 model = KNeighborsRegressor(n_neighbors=5)
 
+print(train_df.columns)
 
 
-"""
-X = train_df[['ADJUST_CAPACITY', 'DOWNTIME', 'CURRENT_WAIT_TIME', 'year',
-       'month', 'day', 'time', 'Water Ride', 'Pirate Ship']]
+X = train_df[['feels_like', 'pressure', 'wind_speed',
+       'rain_1h', 'snow_1h', 'ADJUST_CAPACITY', 'DOWNTIME',
+       'CURRENT_WAIT_TIME', 'TIME_TO_PARADE_1', 'TIME_TO_PARADE_2',
+       'TIME_TO_NIGHT_SHOW', 'year', 'month', 'day', 'time',
+       'Water Ride', 'Pirate Ship']]
 
 Y = train_df[['WAIT_TIME_IN_2H']]
 
 
 model.fit(X,Y)
-"""
+
 
