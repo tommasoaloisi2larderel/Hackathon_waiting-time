@@ -14,7 +14,7 @@ train_df["DATETIME"] = pd.to_datetime(train_df["DATETIME"])
 
 train_df["year"] = train_df["DATETIME"].dt.year
 train_df["month"] = train_df["DATETIME"].dt.month
-train_df["day"] = train_df["DATETIME"].dt.day
+train_df["day"] = train_df["DATETIME"].dt.weekday
 train_df["time"] = train_df["DATETIME"].dt.time
 train_df = train_df.drop(columns=["DATETIME"])
 train_df["time"] = train_df["time"].apply(lambda t: t.hour * 60 + t.minute)
@@ -28,7 +28,7 @@ train_df = train_df.drop(columns=["ENTITY_DESCRIPTION_SHORT"])
 model = KNeighborsRegressor(n_neighbors=5)
 
 
-print(train_df.columns)
+#print(train_df.head())
 
 X = train_df[['ADJUST_CAPACITY', 'DOWNTIME', 'CURRENT_WAIT_TIME', 'year',
        'month', 'day', 'time', 'Water Ride', 'Pirate Ship']]
@@ -37,6 +37,5 @@ Y = train_df[['WAIT_TIME_IN_2H']]
 
 
 model.fit(X,Y)
-
 
 
