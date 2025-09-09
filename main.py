@@ -14,6 +14,10 @@ weather_df = pd.read_csv("weather_data.csv")
 train_df = pd.read_csv("waiting_times_train.csv")
 test_df = pd.read_csv("waiting_times_X_test_val.csv")
 
+weather_df = weather_df.drop(columns=["cloud_all"])
+weather_df = weather_df.drop(columns=["temp"])
+weather_df = weather_df.drop(columns=["dew_point"])
+weather_df = weather_df.drop(columns=["humidity"])
 
 
 def format_file(df):
