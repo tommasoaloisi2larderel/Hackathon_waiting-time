@@ -11,32 +11,36 @@ os.chdir(pyFileLoca)
 
 weather_df = pd.read_csv("weather_data.csv")
 
-times_df = pd.read_csv("waiting_times_train.csv")
-
-train_df = pd.merge(weather_df, times_df, on="DATETIME")
-
+train_df = pd.read_csv("waiting_times_train.csv")
+test_df = pd.read_csv("waiting_times_X_test_val.csv")
 
 
-# Adapting columns (Date and attraction):
-train_df["DATETIME"] = pd.to_datetime(train_df["DATETIME"])
 
-train_df["year"] = train_df["DATETIME"].dt.year
-train_df["month"] = train_df["DATETIME"].dt.month
-train_df["day"] = train_df["DATETIME"].dt.weekday
-train_df["time"] = train_df["DATETIME"].dt.time
-train_df = train_df.drop(columns=["DATETIME"])
-train_df["time"] = train_df["time"].apply(lambda t: t.hour * 60 + t.minute)
+def format_file(df):
+       df = pd.merge(weather_df, df, on="DATETIME")
+       # Adapting columns (Date and attraction):
+       df["DATETIME"] = pd.to_datetime(df["DATETIME"])
+       df["year"] = df["DATETIME"].dt.year
+       df["month"] = df["DATETIME"].dt.month
+       df["day"] = df["DATETIME"].dt.weekday
+       df["time"] = df["DATETIME"].dt.time
+       df = df.drop(columns=["DATETIME"])
+       df["time"] = df["time"].apply(lambda t: t.hour * 60 + t.minute)
 
-train_df["Water Ride"] = train_df["ENTITY_DESCRIPTION_SHORT"].apply(lambda x: 1 if x=="Water Ride" else 0)
-train_df["Pirate Ship"] = train_df["ENTITY_DESCRIPTION_SHORT"].apply(lambda x: 1 if x=="Pirate Ship" else 0)
-train_df = train_df.drop(columns=["ENTITY_DESCRIPTION_SHORT"])
+       df["Water Ride"] = df["ENTITY_DESCRIPTION_SHORT"].apply(lambda x: 1 if x=="Water Ride" else 0)
+       df["Pirate Ship"] = df["ENTITY_DESCRIPTION_SHORT"].apply(lambda x: 1 if x=="Pirate Ship" else 0)
+       df = df.drop(columns=["ENTITY_DESCRIPTION_SHORT"])
 
-train_df['TIME_TO_PARADE_2'] = train_df['TIME_TO_PARADE_2'].apply(lambda x: 24*60 if pd.isna(x) else x)
-train_df['TIME_TO_PARADE_1'] = train_df['TIME_TO_PARADE_1'].apply(lambda x: 24*60 if pd.isna(x) else x)
-train_df['TIME_TO_NIGHT_SHOW'] = train_df['TIME_TO_NIGHT_SHOW'].apply(lambda x: 24*60 if pd.isna(x) else x)
+       df['TIME_TO_PARADE_2'] = df['TIME_TO_PARADE_2'].apply(lambda x: 24*60 if pd.isna(x) else x)
+       df['TIME_TO_PARADE_1'] = df['TIME_TO_PARADE_1'].apply(lambda x: 24*60 if pd.isna(x) else x)
+       df['TIME_TO_NIGHT_SHOW'] = df['TIME_TO_NIGHT_SHOW'].apply(lambda x: 24*60 if pd.isna(x) else x)
 
-train_df['snow_1h'] = train_df['snow_1h'].apply(lambda x: 0 if pd.isna(x) else x)
-train_df['rain_1h'] = train_df['rain_1h'].apply(lambda x: 0 if pd.isna(x) else x)
+       df['snow_1h'] = df['snow_1h'].apply(lambda x: 0 if pd.isna(x) else x)
+       df['rain_1h'] = df['rain_1h'].apply(lambda x: 0 if pd.isna(x) else x)
+       return df
+
+train_df = format_file(train_df)
+test_df = format_file(test_df)
 
 model = KNeighborsRegressor(n_neighbors=5)
 
@@ -54,27 +58,6 @@ Y = train_df[['WAIT_TIME_IN_2H']]
 
 model.fit(X,Y)
 
-# Charger les données test
-test_df = pd.read_csv("waiting_times_X_test_val.csv")
-
-# Appliquer les mêmes transformations que pour train_df
-test_df["DATETIME"] = pd.to_datetime(test_df["DATETIME"])
-test_df["year"] = test_df["DATETIME"].dt.year
-test_df["month"] = test_df["DATETIME"].dt.month
-test_df["day"] = test_df["DATETIME"].dt.day
-test_df["time"] = test_df["DATETIME"].dt.time
-test_df = test_df.drop(columns=["DATETIME"])
-test_df["time"] = test_df["time"].apply(lambda t: t.hour * 60 + t.minute)
-
-test_df["Water Ride"] = test_df["ENTITY_DESCRIPTION_SHORT"].apply(lambda x: 1 if x=="Water Ride" else 0)
-test_df["Pirate Ship"] = test_df["ENTITY_DESCRIPTION_SHORT"].apply(lambda x: 1 if x=="Pirate Ship" else 0)
-test_df = test_df.drop(columns=["ENTITY_DESCRIPTION_SHORT"])
-train_df['TIME_TO_PARADE_2'] = train_df['TIME_TO_PARADE_2'].apply(lambda x: 24*60 if pd.isna(x) else x)
-train_df['TIME_TO_PARADE_1'] = train_df['TIME_TO_PARADE_1'].apply(lambda x: 24*60 if pd.isna(x) else x)
-train_df['TIME_TO_NIGHT_SHOW'] = train_df['TIME_TO_NIGHT_SHOW'].apply(lambda x: 24*60 if pd.isna(x) else x)
-
-train_df['snow_1h'] = train_df['snow_1h'].apply(lambda x: 0 if pd.isna(x) else x)
-train_df['rain_1h'] = train_df['rain_1h'].apply(lambda x: 0 if pd.isna(x) else x)
 
 # S'assurer que toutes les colonnes nécessaires sont présentes
 X_test = test_df[['feels_like', 'pressure', 'wind_speed',
@@ -95,7 +78,7 @@ print(test_df[['PREDICTED_WAIT_TIME_IN_2H']].head())
 # Sauvegarder dans un fichier CSV
 test_df.to_csv("waiting_times_with_predictions.csv", index=False)
 
-Predictions 
+# Predictions 
 df = pd.read_csv("waiting_times_X_test_val.csv")
 df_copy = df.copy(deep=True)
 df_copy = df_copy.drop(columns=["ADJUST_CAPACITY"])
@@ -111,5 +94,5 @@ key_=["Validation" for i in range (0,2444)]
 df_copy["KEY"]=key_
 df_copy
 
-df_copy.to_csv("TEST_waiting_times_DecisionTREEregressor.csv", index=False)
+df_copy.to_csv("TEST_waiting_times_KNeighborsRegressor.csv", index=False)
 
