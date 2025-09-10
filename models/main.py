@@ -13,4 +13,4 @@ model = model_1.copy()
 model["y_pred"] =  model_1["y_pred"] + model_2["y_pred"] + model_4["y_pred"] + model_5["y_pred"] + model_6["y_pred"]
 model["y_pred"] = model["y_pred"] / 5
 
-model_2.to_csv("output/TEST_waiting_times_ENSEMBLE.csv", index=False)
+model.to_csv("output/TEST_waiting_times_ENSEMBLE.csv", index=False)

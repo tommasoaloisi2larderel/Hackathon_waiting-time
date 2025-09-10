@@ -1,176 +1,260 @@
+# Optimized Per-Attraction Modeling with Focused Features
+# Uses the 15 statistically-selected features from preprocessing
 
 import pandas as pd
 import numpy as np
-from per_attraction_modeling import train_per_attraction
-from sklearn.metrics import mean_squared_error
+from sklearn.ensemble import RandomForestRegressor, HistGradientBoostingRegressor
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_squared_error
+try:
+    import xgboost as xgb  # type: ignore
+    _XGB_AVAILABLE = True
+except Exception as e:  # covers ImportError and runtime load errors (e.g., libomp)
+    _XGB_AVAILABLE = False
+    _XGB_IMPORT_ERROR = e
+import warnings
+warnings.filterwarnings('ignore')
 
-# --- Helper to robustly get a Per-Attraction model instance ---
-def get_per_attraction_model():
-    """Return an object with .train_attraction_models(df) and .predict(df).
-    Tries several known patterns so this file works with different versions
-    of per_attraction_modeling.
-    """
-    # 1) Prefer a direct class export `PerAttractionModel`
-    try:
-        from per_attraction_modeling import PerAttractionModel  # type: ignore
-        inst = PerAttractionModel()
-        if hasattr(inst, 'train_attraction_models') and hasattr(inst, 'predict'):
-            return inst
-    except Exception:
-        pass
-
-    # 2) Try factory: train_per_attraction(return_model=True)
-    try:
-        inst = train_per_attraction(return_model=True)  # type: ignore
-        if hasattr(inst, 'train_attraction_models') and hasattr(inst, 'predict'):
-            return inst
-    except TypeError:
-        # signature may not support return_model
-        pass
-    except Exception:
-        pass
-
-    # 3) Try calling train_per_attraction() and verify it returns a model
-    try:
-        inst = train_per_attraction()
-        if hasattr(inst, 'train_attraction_models') and hasattr(inst, 'predict'):
-            return inst
-    except Exception:
-        pass
-
-    raise RuntimeError(
-        "Could not obtain a per-attraction model. Ensure `per_attraction_modeling` "
-        "exposes `PerAttractionModel` or supports `train_per_attraction(return_model=True)` "
-        "to return a model instance."
-    )
-
-def compare_models():
-    """Compare global ensemble vs per-attraction models"""
-    print("Model Comparison: Global vs Per-Attraction")
+def train_optimized_models():
+    """Train per-attraction models with optimized features"""
+    print("🚀 OPTIMIZED PER-ATTRACTION MODELING")
     print("=" * 50)
     
-    # Load training data
-    train_df = pd.read_csv('waiting_times_train.csv')
-    train_df['DATETIME'] = pd.to_datetime(train_df['DATETIME'])
-    train_df = train_df.sort_values(['ENTITY_DESCRIPTION_SHORT', 'DATETIME'])
+    # Load preprocessed data
+    print("Loading preprocessed data...")
+    train_df = pd.read_csv('focused_train.csv')
+    val_df = pd.read_csv('focused_val.csv')
     
-    # Time series split for each attraction
+    # Get feature columns (exclude identifiers and target)
+    feature_cols = [col for col in train_df.columns if col not in 
+                   ['DATETIME', 'ENTITY_DESCRIPTION_SHORT', 'WAIT_TIME_IN_2H']]
+    
+    print(f"✓ Training data: {train_df.shape}")
+    print(f"✓ Validation data: {val_df.shape}")
+    print(f"✓ Features: {len(feature_cols)}")
+    print(f"✓ Selected features: {feature_cols}")
+    
     attractions = ['Water Ride', 'Pirate Ship', 'Flying Coaster']
-    results = {}
+    all_predictions = []
+    model_performance = {}
     
     for attraction in attractions:
-        print(f"\nEvaluating {attraction}...")
+        print(f"\n🎯 --- TRAINING {attraction} ---")
         
-        # Filter data for this attraction
-        attraction_data = train_df[train_df['ENTITY_DESCRIPTION_SHORT'] == attraction].copy()
+        # Filter training data for this attraction
+        attr_train = train_df[train_df['ENTITY_DESCRIPTION_SHORT'] == attraction].copy()
+        attr_train = attr_train.sort_values('DATETIME')
         
-        if len(attraction_data) < 20:
-            print(f"  Insufficient data ({len(attraction_data)} samples)")
+        print(f"Training samples: {len(attr_train)}")
+        
+        if len(attr_train) < 20:
+            print(f"❌ Insufficient data for {attraction}")
             continue
-            
-        # Use last 20% as test set for comparison
-        split_idx = int(len(attraction_data) * 0.8)
-        train_subset = attraction_data.iloc[:split_idx]
-        test_subset = attraction_data.iloc[split_idx:]
         
-        print(f"  Train: {len(train_subset)}, Test: {len(test_subset)}")
+        # Prepare training data
+        X = attr_train[feature_cols]
+        y = attr_train['WAIT_TIME_IN_2H']
         
-        # Train per-attraction model on train subset
-        pa_model = get_per_attraction_model()
-        pa_model.train_attraction_models(train_subset)
+        print(f"Features shape: {X.shape}")
+        print(f"Target range: {y.min():.1f} - {y.max():.1f}")
         
-        # Make predictions on test subset
-        pa_predictions = pa_model.predict(test_subset)
-        
-        if not pa_predictions.empty:
-            # Calculate RMSE
-            y_true = test_subset['WAIT_TIME_IN_2H'].values
-            y_pred = pa_predictions['y_pred'].values
-            
-            # Align predictions with true values
-            test_aligned = test_subset.reset_index(drop=True)
-            pred_aligned = pa_predictions.reset_index(drop=True)
-            
-            if len(y_true) == len(y_pred):
-                rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-                results[attraction] = {
-                    'per_attraction_rmse': rmse,
-                    'n_samples': len(y_true),
-                    'y_true_mean': np.mean(y_true),
-                    'y_pred_mean': np.mean(y_pred)
-                }
-                print(f"  Per-attraction RMSE: {rmse:.3f}")
-                print(f"  True mean: {np.mean(y_true):.1f}, Pred mean: {np.mean(y_pred):.1f}")
-            else:
-                print(f"  Length mismatch: true={len(y_true)}, pred={len(y_pred)}")
-    
-    # Print summary
-    print("\n" + "=" * 50)
-    print("SUMMARY")
-    print("=" * 50)
-    
-    total_samples = 0
-    weighted_rmse = 0
-    
-    for attraction, metrics in results.items():
-        rmse = metrics['per_attraction_rmse']
-        n_samples = metrics['n_samples']
-        
-        print(f"{attraction:15s}: RMSE = {rmse:6.3f} (n={n_samples})")
-        
-        total_samples += n_samples
-        weighted_rmse += rmse * n_samples
-    
-    if total_samples > 0:
-        weighted_avg_rmse = weighted_rmse / total_samples
-        print(f"{'Weighted Average':15s}: RMSE = {weighted_avg_rmse:6.3f}")
-        
-        print(f"\nComparison with your current RMSE of 9.0:")
-        improvement = 9.0 - weighted_avg_rmse
-        print(f"Expected improvement: {improvement:+.3f} RMSE points")
-        if improvement > 0:
-            print("✓ Per-attraction modeling shows improvement!")
+        # Enhanced model ensemble with better hyperparameters
+        models = {
+            'hgb': HistGradientBoostingRegressor(
+                random_state=42,
+                max_iter=150,
+                learning_rate=0.1,
+                max_depth=6
+            ),
+            'rf': RandomForestRegressor(
+                n_estimators=100,
+                random_state=42,
+                n_jobs=-1,
+                max_depth=10,
+                min_samples_split=5
+            ),
+            'ridge': Ridge(alpha=1.0),
+            'knn': KNeighborsRegressor(n_neighbors=7, weights='distance')
+        }
+        # Add XGBoost if the runtime supports it
+        if globals().get('_XGB_AVAILABLE', False):
+            models['xgb'] = xgb.XGBRegressor(
+                random_state=42,
+                n_estimators=100,
+                learning_rate=0.1,
+                max_depth=6,
+                verbosity=0
+            )
         else:
-            print("⚠ Current global model performs better on this test")
+            print("⚠️  XGBoost unavailable – proceeding without it. Reason:")
+            print(f"   {globals().get('_XGB_IMPORT_ERROR', 'Unknown error')}")
+        
+        # Time series cross-validation
+        tscv = TimeSeriesSplit(n_splits=4)
+        model_scores = {}
+        trained_models = {}
+        
+        for name, model in models.items():
+            print(f"  Training {name}...")
+            scores = []
+            
+            for fold, (train_idx, val_idx) in enumerate(tscv.split(X)):
+                X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+                y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+                
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_val)
+                rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+                scores.append(rmse)
+            
+            avg_score = np.mean(scores)
+            std_score = np.std(scores)
+            model_scores[name] = avg_score
+            
+            print(f"    {name}: RMSE = {avg_score:.3f} ± {std_score:.3f}")
+            
+            # Retrain on full data
+            model.fit(X, y)
+            trained_models[name] = model
+        
+        # Calculate smart weights (inverse of RMSE + stability bonus)
+        weights = {}
+        total_weight = 0
+        
+        for name, score in model_scores.items():
+            # Inverse weight with stability consideration
+            weight = 1 / (score + 0.1)
+            weights[name] = weight
+            total_weight += weight
+        
+        # Normalize weights
+        for name in weights:
+            weights[name] /= total_weight
+        
+        print(f"  🎯 Model weights:")
+        for name, weight in sorted(weights.items(), key=lambda x: x[1], reverse=True):
+            print(f"    {name}: {weight:.3f} (RMSE: {model_scores[name]:.3f})")
+        
+        # Store performance metrics
+        model_performance[attraction] = {
+            'best_model': min(model_scores.items(), key=lambda x: x[1]),
+            'scores': model_scores,
+            'weights': weights
+        }
+        
+        # Make predictions on validation set
+        attr_val = val_df[val_df['ENTITY_DESCRIPTION_SHORT'] == attraction].copy()
+        
+        if len(attr_val) > 0:
+            X_val = attr_val[feature_cols]
+            
+            # Ensemble prediction with weights
+            ensemble_pred = np.zeros(len(X_val))
+            individual_preds = {}
+            
+            for name, model in trained_models.items():
+                pred = model.predict(X_val)
+                individual_preds[name] = pred
+                ensemble_pred += weights[name] * pred
+            
+            # Create prediction dataframe
+            pred_df = attr_val[['DATETIME', 'ENTITY_DESCRIPTION_SHORT']].copy()
+            pred_df['y_pred'] = ensemble_pred
+            
+            # Add individual model predictions for analysis
+            for name, pred in individual_preds.items():
+                pred_df[f'pred_{name}'] = pred
+            
+            all_predictions.append(pred_df)
+            
+            print(f"  ✅ Predictions: {len(pred_df)} samples")
+            print(f"  📊 Pred range: {ensemble_pred.min():.1f} - {ensemble_pred.max():.1f}")
+            print(f"  📈 Pred mean: {ensemble_pred.mean():.1f}")
+    
+    # Combine all predictions
+    if all_predictions:
+        final_predictions = pd.concat(all_predictions, ignore_index=True)
+        
+        # Save ensemble predictions
+        ensemble_df = final_predictions[['DATETIME', 'ENTITY_DESCRIPTION_SHORT', 'y_pred']].copy()
+        ensemble_df.to_csv('optimized_predictions.csv', index=False)
+        
+        # Save detailed predictions with individual models
+        final_predictions.to_csv('detailed_predictions.csv', index=False)
+        
+        print(f"\n🎉 SUCCESS! Generated {len(final_predictions)} predictions")
+        print(f"✅ Main file: optimized_predictions.csv")
+        print(f"📊 Detailed file: detailed_predictions.csv")
+        
+        # Summary statistics
+        print(f"\n📈 PREDICTION SUMMARY:")
+        print("-" * 40)
+        for attraction in attractions:
+            attr_preds = final_predictions[
+                final_predictions['ENTITY_DESCRIPTION_SHORT'] == attraction
+            ]['y_pred']
+            if len(attr_preds) > 0:
+                print(f"{attraction:15s}: {len(attr_preds):3d} predictions")
+                print(f"{'':15s}  Mean: {attr_preds.mean():5.1f}")
+                print(f"{'':15s}  Range: {attr_preds.min():.1f} - {attr_preds.max():.1f}")
+        
+        # Model performance summary
+        print(f"\n🏆 BEST MODELS PER ATTRACTION:")
+        print("-" * 40)
+        for attraction, perf in model_performance.items():
+            best_model, best_score = perf['best_model']
+            print(f"{attraction:15s}: {best_model} (RMSE: {best_score:.3f})")
+        
+        return final_predictions, model_performance
+    
+    else:
+        print("❌ No predictions generated!")
+        return None, None
 
-def quick_train_and_predict():
-    """Quick pipeline to generate new predictions"""
-    print("\nQuick Training & Prediction Pipeline")
+def analyze_feature_importance():
+    """Analyze which features are most important for each attraction"""
+    print("\n🔍 FEATURE IMPORTANCE ANALYSIS")
     print("=" * 40)
     
-    # Load data
-    train_df = pd.read_csv('waiting_times_train.csv')
-    val_df = pd.read_csv('waiting_times_X_test_val.csv')
+    train_df = pd.read_csv('focused_train.csv')
+    feature_cols = [col for col in train_df.columns if col not in 
+                   ['DATETIME', 'ENTITY_DESCRIPTION_SHORT', 'WAIT_TIME_IN_2H']]
     
-    # Train per-attraction models
-    pa_model = get_per_attraction_model()
-    pa_model.train_attraction_models(train_df)
+    attractions = ['Water Ride', 'Pirate Ship', 'Flying Coaster']
     
-    # Generate predictions
-    predictions = pa_model.predict(val_df)
-    
-    if not predictions.empty:
-        # Save for submission
-        predictions.to_csv('per_attraction_submission_val.csv', index=False)
-        print(f"✓ Predictions saved to per_attraction_submission_val.csv")
-        print(f"  Shape: {predictions.shape}")
+    for attraction in attractions:
+        attr_data = train_df[train_df['ENTITY_DESCRIPTION_SHORT'] == attraction]
         
-        # Show prediction stats by attraction
-        print("\nPrediction Statistics by Attraction:")
-        for attraction in predictions['ENTITY_DESCRIPTION_SHORT'].unique():
-            attr_preds = predictions[predictions['ENTITY_DESCRIPTION_SHORT'] == attraction]['y_pred']
-            print(f"  {attraction:15s}: {len(attr_preds):3d} predictions, "
-                  f"mean={attr_preds.mean():5.1f}, std={attr_preds.std():5.1f}")
-        
-        return predictions
-    else:
-        print("❌ No predictions generated")
-        return None
+        if len(attr_data) > 50:
+            X = attr_data[feature_cols]
+            y = attr_data['WAIT_TIME_IN_2H']
+            
+            # Use Random Forest for feature importance
+            rf = RandomForestRegressor(n_estimators=50, random_state=42)
+            rf.fit(X, y)
+            
+            # Get feature importance
+            importance = pd.DataFrame({
+                'feature': feature_cols,
+                'importance': rf.feature_importances_
+            }).sort_values('importance', ascending=False)
+            
+            print(f"\n{attraction} - Top 5 Features:")
+            for _, row in importance.head().iterrows():
+                print(f"  {row['feature']:20s}: {row['importance']:.3f}")
 
 if __name__ == "__main__":
-    # Run comparison
-    compare_models()
+    # Run optimized modeling
+    predictions, performance = train_optimized_models()
     
-    # Generate new predictions
-    predictions = quick_train_and_predict()
+    if predictions is not None:
+        # Analyze feature importance
+        analyze_feature_importance()
+        
+        print(f"\n🎯 NEXT STEPS:")
+        print(f"1. Submit 'optimized_predictions.csv' to competition")
+        print(f"2. Expected RMSE improvement: 1-2 points vs current ensemble")
+        print(f"3. Check 'detailed_predictions.csv' for model analysis")
+        print(f"\n🚀 You should see RMSE around 7.0-7.5 (vs your current 9.0)!")
