@@ -55,7 +55,7 @@ def create_features(df: pd.DataFrame, weather_df: pd.DataFrame | None = None) ->
     if weather_df is not None and len(weather_df) > 0:
         w = weather_df.copy()
         w['DATETIME'] = pd.to_datetime(w['DATETIME'])
-        df = pd.merge_asof(df.sort_values('DATETIME'), w.sort_values('DATETIME'), on='DATETIME', direction='nearest')
+        df = pd.merge_asof(df.sort_values('DATETIME'), w.sort_values('DATETIME'), on='DATETIME', direction='backward')
         temp = df.get('temp')
         rain = df.get('rain_1h')
         wind = df.get('wind_speed')
@@ -68,9 +68,21 @@ def create_features(df: pd.DataFrame, weather_df: pd.DataFrame | None = None) ->
                                 wind if wind is not None else [None]*len(df))
         ]
         # Drop raw weather columns; keep the single scalar
-        df.drop(columns=['temp', 'rain_1h', 'wind_speed'], errors='ignore', inplace=True)
+        df.drop(columns=['temp', 'rain_1h', 'wind_speed', 'dew_point', 'pressure', 'humidity', 'snow_1h', 'clouds_all'], errors='ignore', inplace=True)
     else:
         df['weather_agreeable'] = np.nan
+
+    # Single event variable and flag (minutes to next event)
+    ev_cols = [c for c in ['TIME_TO_PARADE_1','TIME_TO_PARADE_2','TIME_TO_NIGHT_SHOW'] if c in df.columns]
+    if ev_cols:
+        tmp = df[ev_cols].copy()
+        for c in ev_cols:
+            tmp[c] = tmp[c].where(tmp[c] >= 0, np.nan)  # ignore past events
+        df['mins_to_event'] = tmp.min(axis=1).fillna(999.0)
+        df['event_soon_60'] = (df['mins_to_event'] <= 60).astype(int)
+    else:
+        df['mins_to_event'] = 999.0
+        df['event_soon_60'] = 0
 
     # 1-step lag per attraction (true past only)
     df['wait_lag_1'] = (
@@ -78,6 +90,7 @@ def create_features(df: pd.DataFrame, weather_df: pd.DataFrame | None = None) ->
           .groupby('ENTITY_DESCRIPTION_SHORT')['CURRENT_WAIT_TIME']
           .shift(1)
     )
+    df['wait_trend_1'] = df['CURRENT_WAIT_TIME'] - df['wait_lag_1']
 
     return df
 
@@ -111,10 +124,11 @@ def handle_missing(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def select_features(df: pd.DataFrame, k: int = 15, fit: bool = True,
+def select_features(df: pd.DataFrame, k: int = 20, fit: bool = True,
                     selector: SelectKBest | None = None,
                     selected: list[str] | None = None):
     feature_cols = [c for c in df.columns if c not in ID_COLS + [TARGET_COL]]
+    always_keep = [f for f in ['weather_agreeable','mins_to_event','event_soon_60','wait_trend_1'] if f in feature_cols]
 
     if fit:
         X = df[feature_cols]
@@ -123,8 +137,14 @@ def select_features(df: pd.DataFrame, k: int = 15, fit: bool = True,
         selector.fit(X, y)
         mask = selector.get_support()
         selected = [f for f, keep in zip(feature_cols, mask) if keep]
+        selected = [f for f in selected if f not in always_keep]
+        selected = (always_keep + selected)[:k]
     else:
         selected = [f for f in (selected or feature_cols) if f in df.columns]
+        for f in always_keep:
+            if f not in selected:
+                selected.insert(0, f)
+        selected = selected[:k]
 
     keep = ID_COLS + selected + ([TARGET_COL] if TARGET_COL in df.columns else [])
     return df[keep], selected, selector
@@ -199,7 +219,7 @@ def preprocess_eval(waiting_times_path: str, weather_path: str | None,
 
 def quick_analysis():
     train_df, selected, selector, scaler, scale_cols = preprocess_train(
-        'data/waiting_times_train.csv', 'data/weather_data.csv', k=15, verbose=True
+        'data/waiting_times_train.csv', 'data/weather_data.csv', k=20, verbose=True
     )
     print(f"Top features ({len(selected)}): {selected}")
     train_df.to_csv('focused_train.csv', index=False)
