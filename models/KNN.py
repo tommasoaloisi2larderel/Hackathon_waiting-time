@@ -67,3 +67,4 @@ df_out["ENTITY_DESCRIPTION_SHORT"] = test_df["ENTITY_DESCRIPTION_SHORT"]
 df_out["y_pred"] = predictions
 df_out["KEY"] = "Validation"
 df_out.to_csv("TEST_waiting_times_KNN.csv", index=False)
+
