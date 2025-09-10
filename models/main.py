@@ -1,16 +1,53 @@
 import pandas as pd
-import os
-from sklearn.neighbors import KNeighborsRegressor
+from pathlib import Path
 
-model_1 = pd.read_csv("output/TEST_waiting_times_HGBR.csv")
-model_2 = pd.read_csv("output/TEST_waiting_times_KNN.csv")
-model_3 = pd.read_csv("output/decision_tree_regression_predictions.csv")
-model_4 = pd.read_csv("output/random_forest_regression_predictions.csv")
-model_5 = pd.read_csv("output/xgboost_regression_predictions.csv")
-model_6 = pd.read_csv("output/linear_regression_predictions.csv")
-model = model_1.copy()
+# --- Config: list the model prediction files ---
+MODEL_FILES = [
+    "output/TEST_waiting_times_HGBR.csv",
+    "output/TEST_waiting_times_KNN.csv",
+    "output/decision_tree_regression_predictions.csv",
+    "output/random_forest_regression_predictions.csv",
+    "output/xgboost_regression_predictions.csv",
+    "output/linear_regression_predictions.csv",
+    "waiting_times_predictions_ALL_forest.csv",
+]
 
-model["y_pred"] =  model_1["y_pred"] + model_2["y_pred"] + model_4["y_pred"] + model_5["y_pred"] + model_6["y_pred"]
-model["y_pred"] = model["y_pred"] / 5
+RMSE = [9.43, 10.03]
 
-model.to_csv("output/TEST_waiting_times_ENSEMBLE.csv", index=False)
+# Keys that must match across models
+KEY_COLS = ["DATETIME", "ENTITY_DESCRIPTION_SHORT", "KEY"]
+YPRED = "y_pred"
+
+# Where to save the ensemble
+OUT_PATH = Path("output/TEST_waiting_times_ENSEMBLE.csv")
+
+
+def main():
+    print("📦 Loading model files…")
+
+    # Read the first file as the base
+    base = pd.read_csv(MODEL_FILES[0])[KEY_COLS + [YPRED]].copy()
+    base = base.rename(columns={YPRED: "y_pred_1"})
+
+    # Iteratively merge the rest, keeping only the keys and y_pred
+    for idx, path in enumerate(MODEL_FILES[1:], start=2):
+        df = pd.read_csv(path)[KEY_COLS + [YPRED]].copy()
+        df = df.rename(columns={YPRED: f"y_pred_{idx}"})
+        base = base.merge(df, on=KEY_COLS, how="inner")
+
+    # Keep validation rows (as per your workflow)
+    base = base[base["KEY"] == "Validation"].copy()
+
+    # Sum and average predictions across models
+    y_cols = [c for c in base.columns if c.startswith("y_pred_")]
+    base["y_pred"] = base[y_cols].mean(axis=1)
+
+    # Output
+    out = base[KEY_COLS + ["y_pred"]]
+    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(OUT_PATH, index=False)
+    print(f"✅ Saved ensemble to {OUT_PATH} with shape {out.shape}")
+
+
+if __name__ == "__main__":
+    main()

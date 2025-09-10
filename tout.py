@@ -4,6 +4,9 @@ from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
+from xgboost import XGBRegressor
+from xgboost.callback import EarlyStopping
+from itertools import product
 
 
 import pandas as pd
@@ -11,7 +14,7 @@ from pathlib import Path
 
 # POUR LE TRAIN
 # chemin du fichier source
-src = Path("waiting_times_train.csv")   # <— remplace par ton chemin si besoin
+src = Path("data/waiting_times_train.csv")   # <— remplace par ton chemin si besoin
 # dossier de sortie
 out_dir = src.parent
 
@@ -46,7 +49,7 @@ print(out_dir / "with_all_events.csv")
 print(out_dir / "with_no_events.csv")
 
 # chemin du fichier source
-src = Path("waiting_times_X_test_val.csv")   # <— remplace par ton chemin si besoin
+src = Path("data/waiting_times_X_test_val.csv")   # <— remplace par ton chemin si besoin
 # dossier de sortie
 out_dir = src.parent
 
@@ -238,6 +241,66 @@ def drop_unwanted_features(X, unwanted=(), drop_prefixes=(), drop_contains=()):
 
 
 # ======================
+#    Hyperparam search
+# ======================
+
+def grid_search_xgb(X_tr_s, y_tr, X_val_s, y_val, param_grid, random_state=42, verbose=True, key_label=""):
+    """Grid-search XGBRegressor to minimize validation RMSE.
+    Returns (best_model, best_params, best_rmse, results_df).
+    """
+    trials = []
+    best = {"rmse": float("inf"), "params": None, "model": None}
+
+    keys = sorted(param_grid.keys())
+    values = [param_grid[k] for k in keys]
+    total = 1
+    for v in values:
+        total *= len(v)
+    if verbose:
+        print(f"[{key_label}] 🔎 Grid size: {total} combos")
+
+    for combo in product(*values):
+        params = dict(zip(keys, combo))
+        model = XGBRegressor(
+            n_estimators=params.get("n_estimators", 300),
+            learning_rate=params.get("learning_rate", 0.1),
+            max_depth=params.get("max_depth", 6),
+            subsample=params.get("subsample", 0.8),
+            colsample_bytree=params.get("colsample_bytree", 0.8),
+            eval_metric='rmse',
+            random_state=random_state,
+            n_jobs=-1,
+            tree_method="hist",
+        )
+        # Train with early stopping when available; otherwise fall back gracefully
+        try:
+            model.fit(
+                X_tr_s, y_tr,
+                eval_set=[(X_val_s, y_val)],
+                verbose=False,
+                callbacks=[EarlyStopping(rounds=50, save_best=True)],
+            )
+        except TypeError:
+            # Older xgboost versions don't support `callbacks` in fit
+            model.fit(
+                X_tr_s, y_tr,
+                eval_set=[(X_val_s, y_val)],
+                verbose=False,
+            )
+        preds = model.predict(X_val_s)
+        rmse = float(np.sqrt(mean_squared_error(y_val, preds)))
+        trials.append({"rmse": rmse, **params})
+        if rmse < best["rmse"]:
+            best = {"rmse": rmse, "params": params, "model": model}
+        if verbose:
+            print(f"[{key_label}] tried {params} -> RMSE {rmse:.4f}")
+
+    results_df = pd.DataFrame(trials).sort_values("rmse").reset_index(drop=True)
+    if verbose and not results_df.empty:
+        print(f"[{key_label}] 🏁 Best RMSE {best['rmse']:.4f} with {best['params']}")
+    return best["model"], best["params"], best["rmse"], results_df
+
+# ======================
 #    Run one scenario
 # ======================
 def run_scenario(
@@ -245,7 +308,7 @@ def run_scenario(
     test_path,
     keep_event_cols,     # tuple des colonnes d'event à conserver comme features
     key_label,           # étiquette pour la sortie
-    weather_path="weather_data.csv",
+    weather_path="data/weather_data.csv",
     target="WAIT_TIME_IN_2H",
     lr=0.01, n_iter=2000, batch_size=256, l2=1e-3, early_stopping_rounds=50, verbose=True
 ):
@@ -306,22 +369,29 @@ def run_scenario(
     # Standardisation (inutile pour RF mais on garde l’API cohérente)
     X_tr_s, X_val_s, mu, sigma = standardize_train_test(X_tr, X_val)
 
-    # Train (RandomForest)
-    model = XGBRegressor(
-    n_estimators=150,
-    learning_rate=0.1,
-    max_depth=6,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=42,
-    n_jobs=-1
-)
-    model.fit(X_tr_s, y_tr)
+    # Hyperparameter search for XGBRegressor (optimize RMSE on validation)
+    param_grid = {
+        "n_estimators": [200, 400],
+        "learning_rate": [0.05, 0.10],
+        "max_depth": [4, 6, 8],
+        "subsample": [0.7, 0.9],
+        "colsample_bytree": [0.7, 0.9],
+    }
+    model, best_params, best_rmse, tuning_df = grid_search_xgb(
+        X_tr_s, y_tr, X_val_s, y_val, param_grid, verbose=True, key_label=key_label
+    )
+    # Save tuning results per scenario
+    tuning_path = Path(f"tuning_{key_label}.csv")
+    try:
+        tuning_df.to_csv(tuning_path, index=False)
+        print(f"[{key_label}] 🧪 Tuning results saved to {tuning_path}")
+    except Exception as e:
+        print(f"[{key_label}] (could not save tuning results: {e})")
 
     # Eval
     preds_val = model.predict(X_val_s)
-    rmse_val = np.sqrt(mean_squared_error(y_val, preds_val))
-    print(f"[{key_label}] Validation RMSE: {rmse_val:.4f}")
+    rmse_val = float(np.sqrt(mean_squared_error(y_val, preds_val)))
+    print(f"[{key_label}] Validation RMSE (best): {rmse_val:.4f}")
 
     # Test pred
     X_test_s = (X_test - mu) / sigma
@@ -354,9 +424,9 @@ def main():
     # Chemins des fichiers par scénario
     scenarios = [
         # (train_path, test_path, keep_event_cols, key_label)
-        ("with_no_events.csv",              "with_no_events_test.csv",              tuple(),                                "NO_EVENTS"),
-        ("with_all_events.csv",             "with_all_events_test.csv",             ("TIME_TO_PARADE_1","TIME_TO_PARADE_2","TIME_TO_NIGHT_SHOW"), "ALL_EVENTS"),
-        ("with_parade1_nightshow.csv",      "with_parade1_nightshow_test.csv",      ("TIME_TO_PARADE_1","TIME_TO_NIGHT_SHOW"),                   "P1_NIGHT"),
+        ("focused_train_no_parade.csv",              "focused_val_no_parade.csv",              tuple(),                                "NO_EVENTS"),
+        ("focused_train_all_three.csv",             "focused_val_all_three.csv",             ("TIME_TO_PARADE_1","TIME_TO_PARADE_2","TIME_TO_NIGHT_SHOW"), "ALL_EVENTS"),
+        ("focused_train_p1_night_only.csv",      "focused_val_p1_night_only.csv",      ("TIME_TO_PARADE_1","TIME_TO_NIGHT_SHOW"),                   "P1_NIGHT"),
     ]
 
     outputs = []
@@ -366,7 +436,7 @@ def main():
             test_path=test_path,
             keep_event_cols=keep_cols,
             key_label=key,
-            weather_path="weather_data.csv",
+            weather_path="data/weather_data.csv",
             target="WAIT_TIME_IN_2H",
             lr=0.01, n_iter=2000, batch_size=256, l2=1e-3, early_stopping_rounds=50, verbose=True
         )
