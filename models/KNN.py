@@ -3,11 +3,11 @@ from sklearn.neighbors import KNeighborsRegressor
 from sklearn.preprocessing import StandardScaler
 
 # Load and merge datasets
-weather_df = pd.read_csv("weather_data.csv")
-train_df = pd.read_csv("waiting_times_train.csv")
+weather_df = pd.read_csv("data/weather_data.csv")
+train_df = pd.read_csv("data/waiting_times_train.csv")
 train_df = pd.merge(weather_df, train_df, on="DATETIME")
 
-test_df = pd.read_csv("waiting_times_X_test_val.csv")
+test_df = pd.read_csv("data/waiting_times_X_test_val.csv")
 test_df = pd.merge(weather_df, test_df, on="DATETIME")
 
 # Common preprocessing function
@@ -66,5 +66,5 @@ df_out = df_out[["DATETIME"]].copy()
 df_out["ENTITY_DESCRIPTION_SHORT"] = test_df["ENTITY_DESCRIPTION_SHORT"]
 df_out["y_pred"] = predictions
 df_out["KEY"] = "Validation"
-df_out.to_csv("TEST_waiting_times_KNN.csv", index=False)
+df_out.to_csv("output/TEST_waiting_times_KNN.csv", index=False)
 

@@ -9,12 +9,12 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 # -------------------------
 # Load and merge datasets
 # -------------------------
-weather_df = pd.read_csv("weather_data.csv")
+weather_df = pd.read_csv("data/weather_data.csv")
 
-train_df = pd.read_csv("waiting_times_train.csv")
+train_df = pd.read_csv("data/waiting_times_train.csv")
 train_df = pd.merge(weather_df, train_df, on="DATETIME")
 
-test_df = pd.read_csv("waiting_times_X_test_val.csv")
+test_df = pd.read_csv("data/waiting_times_X_test_val.csv")
 test_df = pd.merge(weather_df, test_df, on="DATETIME")
 
 # -------------------------
@@ -110,4 +110,4 @@ pred = model.predict(X_test)
 out = test_df[["DATETIME", "ENTITY_DESCRIPTION_SHORT"]].copy()
 out["y_pred"] = pred
 out["KEY"] = "Validation"
-out.to_csv("TEST_waiting_times_HGBR.csv", index=False)
+out.to_csv("output/TEST_waiting_times_HGBR.csv", index=False)
