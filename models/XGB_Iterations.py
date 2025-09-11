@@ -6,6 +6,7 @@ from sklearn.metrics import mean_squared_error
 from sklearn.ensemble import RandomForestRegressor
 import matplotlib.pyplot as plt
 import xgboost as xgb
+from xgboost import XGBRegressor
 
 
 
@@ -184,9 +185,8 @@ def add_vacances_column(X):
     X["vacances"] = X["month"].apply(lambda m: 1 if m in VACANCES_MOIS else 0)
     return X
 
+
 def run_scenario(
-    train_path,
-    test_path,
     keep_event_cols,     # tuple des colonnes d'event à conserver comme features
     key_label,           # étiquette pour la sortie
     weather_path="weather_data.csv",
@@ -194,58 +194,24 @@ def run_scenario(
     lr=0.01, n_iter=2000, batch_size=256, l2=1e-3, early_stopping_rounds=50, verbose=True
 ):
     print(f"\n=== Scenario: {key_label} ===")
-    train_raw = pd.read_csv(train_path)
-    test_raw  = pd.read_csv(test_path)
-    weather   = pd.read_csv(weather_path)
+    train_raw = pd.read_csv("data/FINAL_TRAIN.csv")
+    test_raw  = pd.read_csv("data/FINAL_TEST.csv")
 
-    # Merge météo
-    train_df = safe_merge_on_datetime(train_raw, weather)
-    test_df  = safe_merge_on_datetime(test_raw, weather)
-
-    # Features de base
-    train_fe = feature_engineer(train_df)
-    test_fe  = feature_engineer(test_df)
+    # Features are assumed already processed, no merge or feature_engineer
+    train_fe = train_raw.copy()
+    test_fe = test_raw.copy()
 
     # Cible
     if target not in train_fe.columns:
-        raise ValueError(f"Colonne cible {target} absente du train: {train_path}")
+        raise ValueError(f"Colonne cible {target} absente du train: data/FINAL_TRAIN.csv")
 
     # y 1D pour RandomForest
     y_all = train_fe[target].astype(float).values.ravel()
 
-    # Gestion des colonnes d'events selon le scénario
-    train_fe_use = drop_event_columns(train_fe, keep=keep_event_cols)
-    test_fe_use  = drop_event_columns(test_fe,  keep=keep_event_cols)
+    # No drop_event_columns or unwanted features handling
+    X_all = train_fe.drop(columns=[target], errors="ignore").select_dtypes(include=[np.number])
+    X_test = test_fe.select_dtypes(include=[np.number])
 
-    # Sélection des features numériques hors target
-    X_all = train_fe_use.drop(columns=[target], errors="ignore").select_dtypes(include=[np.number])
-    X_test = test_fe_use.select_dtypes(include=[np.number])
-
-    # >>>>>>>>> Choisis ici ce que tu veux enlever (exemples) <<<<<<<<<
-    UNWANTED = {
-        # exemples météo :
-         "feels_like", "clouds_all","pressure","humidity"
-        # exemples autres :
-        # "ADJUST_CAPACITY", "DOWNTIME", "CURRENT_WAIT_TIME",
-    }
-    DROP_PREFIXES = (
-        # exemple : enlever tous les one-hot d’attractions ENT_*
-        # "ENT_",
-    )
-    DROP_CONTAINS = (
-        # exemple : enlever toutes les features contenant ces fragments
-        # "_lag", "_rolling",
-    )
-
-    # Appliquer le drop au train et au test
-    X_all  = drop_unwanted_features(X_all,  unwanted=UNWANTED, drop_prefixes=DROP_PREFIXES, drop_contains=DROP_CONTAINS)
-    X_test = drop_unwanted_features(X_test, unwanted=UNWANTED, drop_prefixes=DROP_PREFIXES, drop_contains=DROP_CONTAINS)
-    X_all=add_season_column(X_all)
-    X_test=add_season_column(X_test)
-    add_covid_column_from_year_month(X_all)
-    add_covid_column_from_year_month(X_test)
-
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     # IMPORTANT : aligne le test sur les colonnes finales du train
     X_test = align_columns(X_test, X_all.columns)
 
@@ -324,16 +290,14 @@ def main():
     # Chemins des fichiers par scénario
     scenarios = [
         # (train_path, test_path, keep_event_cols, key_label)
-        ("with_no_events.csv",              "with_no_events_test.csv",              tuple(),                                "NO_EVENTS"),
-        ("with_all_events.csv",             "with_all_events_test.csv",             ("TIME_TO_PARADE_1","TIME_TO_PARADE_2","TIME_TO_NIGHT_SHOW"), "ALL_EVENTS"),
-        ("with_parade1_nightshow.csv",      "with_parade1_nightshow_test.csv",      ("TIME_TO_PARADE_1","TIME_TO_NIGHT_SHOW"),                   "P1_NIGHT"),
+        (tuple(),                                "NO_EVENTS"),
+        (("TIME_TO_PARADE_1","TIME_TO_PARADE_2","TIME_TO_NIGHT_SHOW"), "ALL_EVENTS"),
+        (("TIME_TO_PARADE_1","TIME_TO_NIGHT_SHOW"),                   "P1_NIGHT"),
     ]
 
     outputs = []
-    for train_path, test_path, keep_cols, key in scenarios:
+    for keep_cols, key in scenarios:
         out_df = run_scenario(
-            train_path=train_path,
-            test_path=test_path,
             keep_event_cols=keep_cols,
             key_label=key,
             weather_path="weather_data.csv",
@@ -353,5 +317,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

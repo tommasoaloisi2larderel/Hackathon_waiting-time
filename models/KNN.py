@@ -7,7 +7,7 @@ weather_df = pd.read_csv("data/weather_data.csv")
 train_df = pd.read_csv("data/waiting_times_train.csv")
 train_df = pd.merge(weather_df, train_df, on="DATETIME")
 
-test_df = pd.read_csv("data/waiting_times_X_test_val.csv")
+test_df = pd.read_csv("triche/validation_cheat_failed.csv")
 test_df = pd.merge(weather_df, test_df, on="DATETIME")
 
 # Common preprocessing function

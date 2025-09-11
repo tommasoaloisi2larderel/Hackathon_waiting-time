@@ -10,9 +10,10 @@ MODEL_FILES = [
     "output/xgboost_regression_predictions.csv",
     "output/linear_regression_predictions.csv",
     "waiting_times_predictions_ALL_forest.csv",
+    "output/XGB_882.csv",
 ]
 
-RMSE = [9.43, 10.03, 11.87, 9.45, 9.57, 10.06, 9.08]
+RMSE = [9.43, 10.03, 11.87, 9.45, 9.57, 10.06, 10.48, 8.82]
 
 # Keys that must match across models
 KEY_COLS = ["DATETIME", "ENTITY_DESCRIPTION_SHORT", "KEY"]
@@ -42,7 +43,7 @@ def main():
     import numpy as np
 
     # Compute weights: inverse of RMSE (lower RMSE = higher weight)
-    weights = np.array([1 / (r - 8)**3 for r in RMSE])
+    weights = np.array([1 / (r - 8)**2 for r in RMSE])
     weights /= weights.sum()  # normalize to sum to 1
     y_matrix = base[[f"y_pred_{i+1}" for i in range(len(RMSE))]].values
     base["y_pred"] = (y_matrix * weights).sum(axis=1)
