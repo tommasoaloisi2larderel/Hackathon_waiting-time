@@ -46,16 +46,16 @@ def create_features(df: pd.DataFrame, weather_df: pd.DataFrame | None = None) ->
     df['wait_per_capacity'] = df['CURRENT_WAIT_TIME'] / (df['ADJUST_CAPACITY'] + 0.1)
     df['has_downtime'] = (df.get('DOWNTIME', 0) > 0).astype(int)
 
-    # Minimal attraction flags (kept because they are highly predictive)
+    # Minimal attraction flags (2 columns for 3 rides; Pirate Ship is 0/0)
     ent = df['ENTITY_DESCRIPTION_SHORT']
-    df['is_water_ride'] = (ent == 'Water Ride').astype(int)
-    df['is_flying_coaster'] = (ent == 'Flying Coaster').astype(int)
+    df['ride_water'] = (ent == 'Water Ride').astype(int)
+    df['ride_flying'] = (ent == 'Flying Coaster').astype(int)
 
     # Weather merge and single comfort score
     if weather_df is not None and len(weather_df) > 0:
         w = weather_df.copy()
         w['DATETIME'] = pd.to_datetime(w['DATETIME'])
-        df = pd.merge_asof(df.sort_values('DATETIME'), w.sort_values('DATETIME'), on='DATETIME', direction='nearest')
+        df = pd.merge_asof(df.sort_values('DATETIME'), w.sort_values('DATETIME'), on='DATETIME', direction='backward')
         temp = df.get('temp')
         rain = df.get('rain_1h')
         wind = df.get('wind_speed')
@@ -68,9 +68,21 @@ def create_features(df: pd.DataFrame, weather_df: pd.DataFrame | None = None) ->
                                 wind if wind is not None else [None]*len(df))
         ]
         # Drop raw weather columns; keep the single scalar
-        df.drop(columns=['temp', 'rain_1h', 'wind_speed'], errors='ignore', inplace=True)
+        df.drop(columns=['temp', 'rain_1h', 'wind_speed', 'dew_point', 'pressure', 'humidity', 'snow_1h', 'clouds_all'], errors='ignore', inplace=True)
     else:
         df['weather_agreeable'] = np.nan
+
+    # Single event variable and flag (minutes to next event)
+    ev_cols = [c for c in ['TIME_TO_PARADE_1','TIME_TO_PARADE_2','TIME_TO_NIGHT_SHOW'] if c in df.columns]
+    if ev_cols:
+        tmp = df[ev_cols].copy()
+        for c in ev_cols:
+            tmp[c] = tmp[c].where(tmp[c] >= 0, np.nan)  # ignore past events
+        df['mins_to_event'] = tmp.min(axis=1).fillna(999.0)
+        df['event_soon_60'] = (df['mins_to_event'] <= 60).astype(int)
+    else:
+        df['mins_to_event'] = 999.0
+        df['event_soon_60'] = 0
 
     # 1-step lag per attraction (true past only)
     df['wait_lag_1'] = (
@@ -78,6 +90,7 @@ def create_features(df: pd.DataFrame, weather_df: pd.DataFrame | None = None) ->
           .groupby('ENTITY_DESCRIPTION_SHORT')['CURRENT_WAIT_TIME']
           .shift(1)
     )
+    df['wait_trend_1'] = df['CURRENT_WAIT_TIME'] - df['wait_lag_1']
 
     return df
 
@@ -101,8 +114,14 @@ def handle_missing(df: pd.DataFrame) -> pd.DataFrame:
     for c in num_cols:
         if df[c].isna().any():
             df[c] = df[c].fillna(df[c].median())
+    # Final fallbacks for stubborn NaNs (e.g., columns entirely NaN within a scenario)
+    if 'weather_agreeable' in df.columns:
+        df['weather_agreeable'] = df['weather_agreeable'].fillna(0.5)  # neutral comfort default
+    for c in num_cols:
+        if df[c].isna().any():
+            df[c] = df[c].fillna(0.0)
     # Normalize binaries
-    for c in ['has_downtime', 'is_water_ride', 'is_flying_coaster']:
+    for c in ['has_downtime', 'ride_water', 'ride_flying']:
         if c in df.columns:
             df[c] = df[c].fillna(0).astype(int)
     # Lag: fallback to current if first row
@@ -111,10 +130,11 @@ def handle_missing(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def select_features(df: pd.DataFrame, k: int = 15, fit: bool = True,
+def select_features(df: pd.DataFrame, k: int = 20, fit: bool = True,
                     selector: SelectKBest | None = None,
                     selected: list[str] | None = None):
-    feature_cols = [c for c in df.columns if c not in ID_COLS + [TARGET_COL]]
+    feature_cols = [c for c in df.columns if c not in ['DATETIME', 'ENTITY_DESCRIPTION_SHORT', TARGET_COL]]
+    always_keep = [f for f in ['weather_agreeable','mins_to_event','event_soon_60','wait_trend_1'] if f in feature_cols]
 
     if fit:
         X = df[feature_cols]
@@ -123,10 +143,16 @@ def select_features(df: pd.DataFrame, k: int = 15, fit: bool = True,
         selector.fit(X, y)
         mask = selector.get_support()
         selected = [f for f, keep in zip(feature_cols, mask) if keep]
+        selected = [f for f in selected if f not in always_keep]
+        selected = (always_keep + selected)[:k]
     else:
         selected = [f for f in (selected or feature_cols) if f in df.columns]
+        for f in always_keep:
+            if f not in selected:
+                selected.insert(0, f)
+        selected = selected[:k]
 
-    keep = ID_COLS + selected + ([TARGET_COL] if TARGET_COL in df.columns else [])
+    keep = ['DATETIME', 'ENTITY_DESCRIPTION_SHORT'] + selected + ([TARGET_COL] if TARGET_COL in df.columns else [])
     return df[keep], selected, selector
 
 
@@ -159,6 +185,43 @@ def scale_features(df: pd.DataFrame, fit: bool = True,
 # Public helpers for train / eval
 # ----------------------------
 
+def split_scenarios(df: pd.DataFrame) -> dict:
+    """Split *raw* dataframe into three scenarios BEFORE any normalization/imputation.
+    Scenarios are row-level, based on presence of parade time columns:
+      1) 'p1_night_only': TIME_TO_PARADE_1 and TIME_TO_NIGHT_SHOW present, TIME_TO_PARADE_2 absent
+      2) 'all_three': all three present
+      3) 'no_parade': none present
+    If parade columns are missing entirely, they are treated as all-NaN.
+    Returns a dict mapping scenario key to a *copy* of the subset dataframe.
+    """
+    df = df.copy()
+    p1 = df['TIME_TO_PARADE_1'] if 'TIME_TO_PARADE_1' in df.columns else pd.Series([np.nan] * len(df), index=df.index)
+    p2 = df['TIME_TO_PARADE_2'] if 'TIME_TO_PARADE_2' in df.columns else pd.Series([np.nan] * len(df), index=df.index)
+    ns = df['TIME_TO_NIGHT_SHOW'] if 'TIME_TO_NIGHT_SHOW' in df.columns else pd.Series([np.nan] * len(df), index=df.index)
+
+    has_p1 = p1.notna()
+    has_p2 = p2.notna()
+    has_ns = ns.notna()
+
+    mask_all_three = has_p1 & has_p2 & has_ns
+    mask_p1_night_only = has_p1 & (~has_p2) & has_ns
+    mask_no_parade = (~has_p1) & (~has_p2) & (~has_ns)
+
+    subsets = {
+        'p1_night_only': df[mask_p1_night_only].copy(),
+        'all_three': df[mask_all_three].copy(),
+        'no_parade': df[mask_no_parade].copy(),
+    }
+
+    # Optional safety check: rows not matched (should be empty per problem statement)
+    unmatched = ~(mask_all_three | mask_p1_night_only | mask_no_parade)
+    if unmatched.any():
+        # Keep them out of all subsets, but warn via print so the user can investigate
+        print(f"⚠️ {unmatched.sum()} rows did not match any scenario and were skipped.")
+
+    return subsets
+
+
 def preprocess_train(waiting_times_path: str, weather_path: str | None = None, k: int = 15, verbose: bool = True):
     if verbose:
         print("🎯 Preprocessing (TRAIN)")
@@ -185,7 +248,7 @@ def preprocess_eval(waiting_times_path: str, weather_path: str | None,
     df = create_features(df, w)
     df = handle_missing(df)
     # Use provided selected list (order preserved)
-    keep = ID_COLS + [f for f in selected if f in df.columns] + ([TARGET_COL] if TARGET_COL in df.columns else [])
+    keep = ['DATETIME', 'ENTITY_DESCRIPTION_SHORT'] + [f for f in selected if f in df.columns] + ([TARGET_COL] if TARGET_COL in df.columns else [])
     df = df[keep]
     df, _, _ = scale_features(df, fit=False, scaler=scaler, scale_cols=scale_cols)
     if verbose:
@@ -193,24 +256,97 @@ def preprocess_eval(waiting_times_path: str, weather_path: str | None,
     return df
 
 
+def preprocess_train_eval_by_scenario(
+    train_path: str,
+    val_path: str,
+    weather_path: str | None = None,
+    k: int = 15,
+    verbose: bool = True,
+    out_prefix_train: str = 'focused_train_',
+    out_prefix_val: str = 'focused_val_'
+):
+    """Run the full pipeline *per scenario*, splitting BEFORE normalization/imputation.
+    Produces six files (up to): one train + one val per scenario key.
+    Returns a dict of per-scenario artifacts.
+    """
+    if verbose:
+        print("🎯 Preprocessing by scenario")
+
+    # Read raw (unsanitized) so we can split based on emptiness
+    raw_train = pd.read_csv(train_path)
+    raw_val = pd.read_csv(val_path)
+    w = pd.read_csv(weather_path) if weather_path else None
+
+    train_splits = split_scenarios(raw_train)
+    val_splits = split_scenarios(raw_val)
+
+    artifacts = {}
+
+    for key, df_train_raw in train_splits.items():
+        if verbose:
+            print(f"\n— Scenario: {key} (train rows: {len(df_train_raw)})")
+        # Run the standard pipeline on the subset
+        df_train = create_features(df_train_raw, w)
+        df_train = handle_missing(df_train)
+        df_train, selected, selector = select_features(df_train, k=k, fit=True)
+        df_train, scaler, scale_cols = scale_features(df_train, fit=True)
+        # Save
+        train_out = f"{out_prefix_train}{key}.csv"
+        df_train.to_csv(train_out, index=False)
+        if verbose:
+            print(f"✓ {key}: saved {train_out} with shape {df_train.shape}")
+
+        # Match validation subset for the same scenario
+        df_val_raw = val_splits.get(key, pd.DataFrame(columns=raw_val.columns))
+        if verbose:
+            print(f"  Validation subset rows: {len(df_val_raw)}")
+        if len(df_val_raw) > 0:
+            df_val = create_features(df_val_raw, w)
+            df_val = handle_missing(df_val)
+            # Keep provided selected list and scale with trained scaler
+            keep = ['DATETIME', 'ENTITY_DESCRIPTION_SHORT'] + [f for f in selected if f in df_val.columns] + ([TARGET_COL] if TARGET_COL in df_val.columns else [])
+            df_val = df_val[keep]
+            df_val, _, _ = scale_features(df_val, fit=False, scaler=scaler, scale_cols=scale_cols)
+        else:
+            # Empty subset -> create an empty frame with the same columns as train
+            df_val = pd.DataFrame(columns=df_train.columns)
+        val_out = f"{out_prefix_val}{key}.csv"
+        df_val.to_csv(val_out, index=False)
+        if verbose:
+            print(f"✓ {key}: saved {val_out} with shape {df_val.shape}")
+
+        artifacts[key] = {
+            'train_df': df_train,
+            'val_df': df_val,
+            'selected': selected,
+            'selector': selector,
+            'scaler': scaler,
+            'scale_cols': scale_cols,
+        }
+
+    return artifacts
+
+
 # ----------------------------
 # Quick demo
 # ----------------------------
 
 def quick_analysis():
-    train_df, selected, selector, scaler, scale_cols = preprocess_train(
-        'data/waiting_times_train.csv', 'data/weather_data.csv', k=15, verbose=True
+    artifacts = preprocess_train_eval_by_scenario(
+        train_path='data/waiting_times_train.csv',
+        val_path='data/waiting_times_X_test_val.csv',
+        weather_path='data/weather_data.csv',
+        k=20,
+        verbose=True,
+        out_prefix_train='focused_train_',
+        out_prefix_val='focused_val_'
     )
-    print(f"Top features ({len(selected)}): {selected}")
-    train_df.to_csv('focused_train.csv', index=False)
-
-    val_df = preprocess_eval(
-        'data/waiting_times_X_test_val.csv', 'data/weather_data.csv',
-        selected, selector, scaler, scale_cols, verbose=True
-    )
-    val_df.to_csv('focused_val.csv', index=False)
-    print("✅ Files saved: focused_train.csv, focused_val.csv")
-    return train_df, val_df, selected
+    print("\n✅ Files saved:")
+    for key, art in artifacts.items():
+        print(f"  - focused_train_{key}.csv  (shape: {art['train_df'].shape})")
+        print(f"  - focused_val_{key}.csv    (shape: {art['val_df'].shape})")
+        print(f"    Top features ({len(art['selected'])}): {art['selected']}")
+    return artifacts
 
 
 if __name__ == '__main__':
